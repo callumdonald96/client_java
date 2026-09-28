@@ -111,6 +111,11 @@ public class Summary extends StatefulMetric<DistributionDataPoint, Summary.DataP
   }
 
   @Override
+  public void observe(double amount, long count) {
+    getNoLabels().observe(amount, count);
+  }
+
+  @Override
   public SummarySnapshot collect() {
     return (SummarySnapshot) super.collect();
   }
@@ -197,6 +202,27 @@ public class Summary extends StatefulMetric<DistributionDataPoint, Summary.DataP
     }
 
     @Override
+    public void observe(double value, long count) {
+      if (count < 0) {
+        throw new IllegalArgumentException(
+            "Negative count " + count + " is illegal for Summary metrics.");
+      }
+      if (count == 0 || Double.isNaN(value)) {
+        return;
+      }
+      if (!buffer.append(value, count)) {
+        buffer.observeDirect(
+            () -> {
+              doObserve(value, count);
+              return null;
+            });
+      }
+      if (exemplarSampler != null) {
+        exemplarSampler.observe(value);
+      }
+    }
+
+    @Override
     public void observeWithExemplar(double value, Labels labels) {
       if (Double.isNaN(value)) {
         return;
@@ -214,13 +240,21 @@ public class Summary extends StatefulMetric<DistributionDataPoint, Summary.DataP
     }
 
     private void doObserve(double amount) {
-      sum.add(amount);
+      doObserve(amount, 1L);
+    }
+
+    private void doObserve(double amount, long n) {
+      sum.add(amount * n);
       if (quantileValues != null) {
-        quantileValues.observe(amount);
+        // The quantile sketch has no weighted insert, so this part of a batch costs one insert per
+        // observation. count and sum are still updated in constant time.
+        for (long i = 0; i < n; i++) {
+          quantileValues.observe(amount);
+        }
       }
       // count must be incremented last, because in collect() the count
       // indicates the number of completed observations.
-      count.increment();
+      count.add(n);
     }
 
     private SummarySnapshot.SummaryDataPointSnapshot collect(Labels labels) {
